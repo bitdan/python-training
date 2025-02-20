@@ -336,6 +336,6 @@ confidence_interval = np.std([model(torch.FloatTensor(future_features)).detach()
                             for model in fold_models], axis=0) * 1.96
 print("\n预测置信区间：")
 for i, (date, pred) in enumerate(zip(future_dates, future_predictions)):
-    lower = max(1, round(pred[0] - confidence_interval[i]))
-    upper = round(pred[0] + confidence_interval[i])
-    print(f"{date.date()}: {pred[0]:.0f} (95% CI: {lower:.0f}-{upper:.0f})")
+    lower = max(1, int(np.round(pred[0] - confidence_interval[i])))
+    upper = int(np.round(pred[0] + confidence_interval[i]))
+    print(f"{date.date()}: {int(pred[0])} (95% CI: {lower}-{upper})")
