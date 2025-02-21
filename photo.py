@@ -58,8 +58,50 @@ print(df.head())
 # 转换 create_time 为 pandas datetime 类型
 df['create_time'] = pd.to_datetime(df['create_time'])
 
-# 如果有缺失值可以进行处理，这里直接丢弃
+# 获取原始数据量
+original_count = len(df)
+
+# 定义重要特征列表（这些特征无论缺失值比例如何都要保留）
+IMPORTANT_FEATURES = ['create_time', 'key_feature1', 'key_feature2']  # 替换为你的重要特征
+
+# 分析每个特征的缺失值比例
+missing_ratio = df.isnull().sum() / len(df) * 100
+print("\n各特征缺失值比例（%）:")
+print(missing_ratio)
+
+# 设定缺失值比例阈值
+MISSING_THRESHOLD = 50.0
+high_missing_features = missing_ratio[
+    (missing_ratio > MISSING_THRESHOLD) & 
+    (~missing_ratio.index.isin(IMPORTANT_FEATURES))
+].index.tolist()
+
+if high_missing_features:
+    print(f"\n缺失值比例超过{MISSING_THRESHOLD}%的特征:")
+    for feature in high_missing_features:
+        print(f"- {feature}: {missing_ratio[feature]:.2f}%")
+    
+    # 删除高缺失值的特征
+    df = df.drop(columns=high_missing_features)
+    print(f"\n已删除以上特征，剩余特征数量: {len(df.columns)}")
+
+# 排除当天创建的数据
+today = pd.Timestamp.now().normalize()
+df = df[df['create_time'].dt.normalize() < today]
+
+# 获取去除当天数据后的数量
+after_date_filter = len(df)
+
+# 处理剩余的缺失值
 df = df.dropna()
+final_count = len(df)
+
+print(f"\n数据处理统计:")
+print(f"原始数据总数: {original_count}")
+print(f"去除当天数据后的记录数: {after_date_filter}")
+print(f"过滤掉的当天记录数: {original_count - after_date_filter}")
+print(f"去除缺失值后的最终记录数: {final_count}")
+print(f"最终保留的特征: {list(df.columns)}")
 
 # 对数值特征进行标准化处理
 scaler = StandardScaler()
