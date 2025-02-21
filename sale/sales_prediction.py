@@ -27,6 +27,8 @@ DATA_DIR = 'data'
 SALES_DATA_FILE = f'{DATA_DIR}/sales_data.csv'
 PREDICTIONS_FILE = f'{DATA_DIR}/sales_predictions.csv'
 PLOT_FILE = f'{DATA_DIR}/sales_prediction.png'
+PTH_DIR = 'pth/sale'
+MODEL_PATH = f'{PTH_DIR}/best_sales_model.pth'
 
 def get_data(start_date=None, end_date=None, batch_size=10000):
     """
@@ -342,30 +344,31 @@ def train_model(df, prediction_days=30, sequence_length=60):
         
         if avg_val_loss < best_loss:
             best_loss = avg_val_loss
-            # 安全地保存模型，移除 weights_only 参数
+            # 创建目录并保存模型
+            os.makedirs(PTH_DIR, exist_ok=True)
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': best_loss,
-            }, 'best_sales_model.pth')
+            }, MODEL_PATH)
             no_improve = 0
         else:
             no_improve += 1
         
         if epoch % 5 == 0:
-            print(f"Epoch {epoch}/{epochs}")
-            print(f"Train Loss: {avg_train_loss:.4f}")
-            print(f"Val Loss: {avg_val_loss:.4f}")
-            print(f"Relative Error: {relative_error:.2f}%")
-            print(f"Learning Rate: {optimizer.param_groups[0]['lr']:.6f}")
+            print(f"Epoch {epoch}/{epochs} | "
+                  f"Train Loss: {avg_train_loss:.4f} | "
+                  f"Val Loss: {avg_val_loss:.4f} | "
+                  f"Relative Error: {relative_error:.2f}% | "
+                  f"Learning Rate: {optimizer.param_groups[0]['lr']:.6f}")
         
         if no_improve >= patience and epoch > 50:  # 确保至少训练50轮
             print("Early stopping triggered!")
             break
     
-    # 加载最佳模型，移除 weights_only 参数
-    checkpoint = torch.load('best_sales_model.pth')
+    # 加载最佳模型
+    checkpoint = torch.load(MODEL_PATH)
     model.load_state_dict(checkpoint['model_state_dict'])
     
     return model, scaler_X, scaler_y, feature_columns
