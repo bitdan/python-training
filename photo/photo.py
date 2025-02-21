@@ -25,6 +25,10 @@ sys.path.append(project_root)
 
 from config.db_config import get_connection, close_connection
 
+# 在文件开头导入部分后添加目录创建逻辑
+model_dir = os.path.join(project_root, 'pth', 'photo')
+os.makedirs(model_dir, exist_ok=True)
+
 def get_data():
     """
     从数据库获取数据
@@ -282,8 +286,9 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
             
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                # 保存当前fold的最佳模型
-                torch.save(model.state_dict(), f'best_model_fold_{fold}.pth')
+                # 保存当前fold的最佳模型到pth/photo目录
+                model_path = os.path.join(model_dir, f'best_model_fold_{fold}.pth')
+                torch.save(model.state_dict(), model_path)
                 no_improve = 0
             else:
                 no_improve += 1
@@ -296,7 +301,8 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
             break
     
     # 加载最佳模型状态
-    model.load_state_dict(torch.load(f'best_model_fold_{fold}.pth'))
+    model_path = os.path.join(model_dir, f'best_model_fold_{fold}.pth')
+    model.load_state_dict(torch.load(model_path))
     fold_models.append(model)
 
 # 使用所有fold的模型进行集成预测
