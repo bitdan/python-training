@@ -1,10 +1,24 @@
+import sys
+import os
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import matplotlib.pyplot as plt
+
+# 添加项目根目录到 Python 路径
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+sys.path.append(project_root)
+
+# 导入配置
 from config.db_config import get_connection, close_connection
+
+# 设置 matplotlib 中文显示
+plt.rcParams['font.sans-serif'] = ['SimHei']  
+plt.rcParams['axes.unicode_minus'] = False    
 
 def get_data():
     """

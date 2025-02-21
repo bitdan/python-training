@@ -1,3 +1,5 @@
+import sys
+import os
 import pymysql
 import pandas as pd
 import numpy as np
@@ -11,11 +13,17 @@ import matplotlib.dates as mdates
 from sklearn.preprocessing import StandardScaler
 import random
 from sklearn.model_selection import KFold
-from config.db_config import get_connection, close_connection
 
-# 在导入部分添加
-plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
-plt.rcParams['axes.unicode_minus'] = False    # 用来正常显示负号
+# 设置 matplotlib 中文显示
+plt.rcParams['font.sans-serif'] = ['SimHei']  
+plt.rcParams['axes.unicode_minus'] = False    
+
+# 添加项目根目录到 Python 路径
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+sys.path.append(project_root)
+
+from config.db_config import get_connection, close_connection
 
 def get_data():
     """
