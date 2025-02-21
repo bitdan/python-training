@@ -4,7 +4,7 @@ from sklearn.model_selection import train_test_split
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from db_config import get_connection, close_connection
+from config.db_config import get_connection, close_connection
 
 def get_data():
     """

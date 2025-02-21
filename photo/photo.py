@@ -11,7 +11,7 @@ import matplotlib.dates as mdates
 from sklearn.preprocessing import StandardScaler
 import random
 from sklearn.model_selection import KFold
-from db_config import get_connection, close_connection
+from config.db_config import get_connection, close_connection
 
 # 在导入部分添加
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
