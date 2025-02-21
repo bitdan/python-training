@@ -16,6 +16,8 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.db_config import get_connection, close_connection
 import argparse
+import matplotlib
+# matplotlib.use('Agg')  # 在导入 pyplot 之前设置
 
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
@@ -335,6 +337,10 @@ def predict_future(model, df, scaler_X, scaler_y, feature_columns, days_to_predi
 
 def plot_predictions(historical_data, predictions):
     """绘制预测结果"""
+    # 确保使用交互式后端
+    if matplotlib.get_backend() == 'agg':
+        matplotlib.use('TkAgg')
+    
     plt.figure(figsize=(15, 7))
     
     # 绘制历史数据
@@ -354,8 +360,8 @@ def plot_predictions(historical_data, predictions):
     plt.xticks(rotation=45)
     plt.tight_layout()
     
-    # 保存图片
-    plt.savefig('sales_prediction.png')
+    # 显示图表
+    plt.show()
     plt.close()
 
 def main():
@@ -398,8 +404,7 @@ def main():
     # 保存预测结果
     os.makedirs(DATA_DIR, exist_ok=True)
     predictions.to_csv(PREDICTIONS_FILE, index=False)
-    plt.savefig(PLOT_FILE)
-    print(f"预测完成！结果已保存到 {PREDICTIONS_FILE} 和 {PLOT_FILE}")
+    print(f"预测结果已保存到 {PREDICTIONS_FILE}")
 
 if __name__ == "__main__":
     main()
