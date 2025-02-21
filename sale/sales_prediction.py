@@ -11,12 +11,20 @@ import matplotlib.dates as mdates
 from sklearn.preprocessing import StandardScaler
 import random
 from sklearn.model_selection import KFold
-from config.db_config import get_connection, close_connection
+import sys
 import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config.db_config import get_connection, close_connection
 import argparse
 
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
+
+# 添加全局文件路径配置
+DATA_DIR = 'data'
+SALES_DATA_FILE = f'{DATA_DIR}/sales_data.csv'
+PREDICTIONS_FILE = f'{DATA_DIR}/sales_predictions.csv'
+PLOT_FILE = f'{DATA_DIR}/sales_prediction.png'
 
 def get_data(start_date=None, end_date=None, batch_size=10000):
     """
@@ -77,18 +85,28 @@ def get_data(start_date=None, end_date=None, batch_size=10000):
     finally:
         close_connection(conn)
 
-def save_data(df, filename='data/sales_data.csv'):
+def save_data(df, filename=SALES_DATA_FILE):
     """保存数据到本地"""
-    # 确保目录存在
-    os.makedirs(os.path.dirname(filename), exist_ok=True)
-    df.to_csv(filename, index=False)
-    print(f"数据已保存到: {filename}")
+    try:
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        df.to_csv(filename, index=False)
+        print(f"数据已保存到: {filename}")
+    except Exception as e:
+        print(f"保存数据时出错: {e}")
 
-def load_local_data(filename='data/sales_data.csv'):
+def load_local_data(filename=SALES_DATA_FILE):
     """从本地加载数据"""
-    if os.path.exists(filename):
-        return pd.read_csv(filename)
-    return None
+    try:
+        if os.path.exists(filename):
+            print(f"正在从本地加载数据: {filename}")
+            df = pd.read_csv(filename)
+            if len(df) > 0:  # 确保数据不为空
+                return df
+        print(f"找不到有效的本地数据文件: {filename}")
+        return None
+    except Exception as e:
+        print(f"加载本地数据时出错: {e}")
+        return None
 
 def preprocess_data(df):
     """数据预处理"""
@@ -341,23 +359,25 @@ def plot_predictions(historical_data, predictions):
     plt.close()
 
 def main():
-    parser = argparse.ArgumentParser(description='销售额预测程序')
-    parser.add_argument('--update', action='store_true', help='是否更新数据源')
-    parser.add_argument('--start_date', type=str, help='开始日期 (YYYY-MM-DD)')
-    parser.add_argument('--end_date', type=str, help='结束日期 (YYYY-MM-DD)')
-    parser.add_argument('--predict_days', type=int, default=30, help='预测天数')
-    args = parser.parse_args()
+    # 直接设置参数，不使用命令行
+    args = {
+        'update': False,  # 是否更新数据源
+        'start_date': None,  # 可以设置具体日期，如 '2024-01-01'
+        'end_date': None,    # 可以设置具体日期，如 '2024-03-01'
+        'predict_days': 30,   # 预测天数
+    }
 
     # 获取数据
-    if args.update:
+    if args['update']:
         print("正在更新数据源...")
-        df = get_data(args.start_date, args.end_date)
+        df = get_data(args['start_date'], args['end_date'])
         save_data(df)
     else:
+        print(f"尝试加载本地数据文件: {SALES_DATA_FILE}")
         df = load_local_data()
         if df is None:
-            print("本地数据不存在，正在从数据库获取...")
-            df = get_data(args.start_date, args.end_date)
+            print("本地数据不存在或无效，正在从数据库获取...")
+            df = get_data(args['start_date'], args['end_date'])
             save_data(df)
 
     # 数据预处理
@@ -370,14 +390,16 @@ def main():
     # 预测未来销售额
     print("生成预测...")
     predictions = predict_future(model, daily_sales, scaler_X, scaler_y, 
-                               feature_columns, args.predict_days)
+                               feature_columns, args['predict_days'])
     
     # 绘制预测结果
     plot_predictions(daily_sales, predictions)
     
     # 保存预测结果
-    predictions.to_csv('sales_predictions.csv', index=False)
-    print("预测完成！结果已保存到 sales_predictions.csv 和 sales_prediction.png")
+    os.makedirs(DATA_DIR, exist_ok=True)
+    predictions.to_csv(PREDICTIONS_FILE, index=False)
+    plt.savefig(PLOT_FILE)
+    print(f"预测完成！结果已保存到 {PREDICTIONS_FILE} 和 {PLOT_FILE}")
 
 if __name__ == "__main__":
     main()
