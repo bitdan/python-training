@@ -253,73 +253,145 @@ def train_model(df, prediction_days=30, sequence_length=60):
     X_test = X_sequences[train_size:]
     y_test = y_sequences[train_size:]
     
-    # 转换为PyTorch张量
+    # 修复维度转换问题
     X_train = torch.FloatTensor(X_train)
-    y_train = torch.FloatTensor(y_train)
+    y_train = torch.FloatTensor(y_train[:, -1]).unsqueeze(1)  # 先转换为tensor再unsqueeze
     X_test = torch.FloatTensor(X_test)
-    y_test = torch.FloatTensor(y_test)
+    y_test = torch.FloatTensor(y_test[:, -1]).unsqueeze(1)    # 先转换为tensor再unsqueeze
     
     # 初始化模型
     model = SalesPredictor(input_dim=len(feature_columns))
     criterion = nn.HuberLoss(delta=1.0)
     optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.01)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
     
-    # 训练模型
-    epochs = 100
+    # 添加批次训练
+    batch_size = 32
+    train_dataset = torch.utils.data.TensorDataset(X_train, y_train)
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, 
+        batch_size=batch_size, 
+        shuffle=True
+    )
+    
+    # 添加验证集数据加载器
+    val_dataset = torch.utils.data.TensorDataset(X_test, y_test)
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset, 
+        batch_size=batch_size
+    )
+
+    # 修改训练参数
+    epochs = 200  # 增加训练轮数
+    patience = 20  # 增加早停耐心值
     best_loss = float('inf')
-    patience = 10
     no_improve = 0
     
+    # 使用更稳定的学习率调度
+    scheduler = optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=0.001,
+        epochs=epochs,
+        steps_per_epoch=len(train_loader),
+        pct_start=0.3,  # 预热阶段占比
+        div_factor=25,  # 初始学习率除数
+        final_div_factor=1e4  # 最终学习率除数
+    )
+
+    # 训练循环
     for epoch in range(epochs):
         model.train()
-        optimizer.zero_grad()
+        total_train_loss = 0
         
-        outputs = model(X_train)
-        loss = criterion(outputs, y_train[:, -1])
-        
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
+        # 批次训练
+        for batch_X, batch_y in train_loader:
+            optimizer.zero_grad()
+            outputs = model(batch_X)
+            loss = criterion(outputs, batch_y)
+            loss.backward()
+            
+            # 梯度裁剪
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)  # 降低裁剪阈值
+            optimizer.step()
+            scheduler.step()  # 每个批次更新学习率
+            total_train_loss += loss.item()
         
         # 验证
         model.eval()
+        total_val_loss = 0
+        val_predictions = []
+        val_targets = []
+        
         with torch.no_grad():
-            val_outputs = model(X_test)
-            val_loss = criterion(val_outputs, y_test[:, -1])
-            scheduler.step(val_loss)
-            
-            if val_loss < best_loss:
-                best_loss = val_loss
-                torch.save(model.state_dict(), 'best_sales_model.pth')
-                no_improve = 0
-            else:
-                no_improve += 1
+            for batch_X, batch_y in val_loader:
+                val_outputs = model(batch_X)
+                val_loss = criterion(val_outputs, batch_y)
+                total_val_loss += val_loss.item()
+                
+                # 收集预测和目标值用于计算其他指标
+                val_predictions.extend(val_outputs.cpu().numpy())
+                val_targets.extend(batch_y.cpu().numpy())
         
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch}/{epochs}, Train Loss: {loss.item():.4f}, Val Loss: {val_loss.item():.4f}")
+        # 计算平均损失
+        avg_train_loss = total_train_loss / len(train_loader)
+        avg_val_loss = total_val_loss / len(val_loader)
         
-        if no_improve >= patience:
-            print("Early stopping!")
+        # 计算验证集上的相对误差
+        val_predictions = np.array(val_predictions)
+        val_targets = np.array(val_targets)
+        relative_error = np.mean(np.abs((val_predictions - val_targets) / val_targets)) * 100
+        
+        if avg_val_loss < best_loss:
+            best_loss = avg_val_loss
+            # 安全地保存模型，移除 weights_only 参数
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': best_loss,
+            }, 'best_sales_model.pth')
+            no_improve = 0
+        else:
+            no_improve += 1
+        
+        if epoch % 5 == 0:
+            print(f"Epoch {epoch}/{epochs}")
+            print(f"Train Loss: {avg_train_loss:.4f}")
+            print(f"Val Loss: {avg_val_loss:.4f}")
+            print(f"Relative Error: {relative_error:.2f}%")
+            print(f"Learning Rate: {optimizer.param_groups[0]['lr']:.6f}")
+        
+        if no_improve >= patience and epoch > 50:  # 确保至少训练50轮
+            print("Early stopping triggered!")
             break
+    
+    # 加载最佳模型，移除 weights_only 参数
+    checkpoint = torch.load('best_sales_model.pth')
+    model.load_state_dict(checkpoint['model_state_dict'])
     
     return model, scaler_X, scaler_y, feature_columns
 
 def predict_future(model, df, scaler_X, scaler_y, feature_columns, days_to_predict=30):
     """预测未来销售额"""
     model.eval()
-    last_sequence = df[feature_columns].iloc[-60:].values  # 使用最后60天的数据
+    
+    # 使用最近一年（365天）的数据，而不是仅仅60天
+    days_of_history = 365
+    last_sequence = df[feature_columns].iloc[-days_of_history:].values
     last_sequence = scaler_X.transform(last_sequence)
     
+    # 使用滑动窗口进行预测
+    window_size = 60  # 保持60天的预测窗口
     predictions = []
-    current_sequence = torch.FloatTensor(last_sequence).unsqueeze(0)
+    
+    # 初始化第一个预测窗口
+    current_sequence = torch.FloatTensor(last_sequence[-window_size:]).unsqueeze(0)
     
     for _ in range(days_to_predict):
         with torch.no_grad():
             next_pred = model(current_sequence).squeeze().item()
             predictions.append(next_pred)
             
-            # 更新序列
+            # 更新序列：移除最早的一天，添加新预测的一天
             current_sequence = torch.roll(current_sequence, -1, dims=1)
             current_sequence[0, -1] = next_pred
     
