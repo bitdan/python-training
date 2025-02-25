@@ -136,19 +136,38 @@ cyclical_encoding(df, 'day_of_week', 7)
 cyclical_encoding(df, 'day_of_month', 31)
 cyclical_encoding(df, 'month', 12)
 
-# 更新输入特征
+# 添加星期几作为分类特征
+df['day_name'] = df['create_time'].dt.day_name()
+
+# 计算每个星期几的平均箱数
+day_avg = df.groupby('day_name')['box_count'].mean().to_dict()
+print("\n每个星期几的平均箱数:")
+for day, avg in day_avg.items():
+    print(f"{day}: {avg:.2f}")
+
+# 添加day_avg_norm特征
+df['day_avg_norm'] = df['day_name'].map(day_avg)
+df['day_avg_norm'] = (df['day_avg_norm'] - df['day_avg_norm'].mean()) / df['day_avg_norm'].std()
+
+# 添加前一周同一天的箱数作为特征
+df = df.sort_values('create_time')
+df['prev_week_same_day'] = df.groupby(df['create_time'].dt.dayofweek)['box_count'].shift(1)
+
+# 然后再定义feature_columns
 feature_columns = [
     'supplier_delivery_quantity', 'scan_quantity',
     'hour_sin', 'hour_cos',
     'day_of_week_sin', 'day_of_week_cos',
     'day_of_month_sin', 'day_of_month_cos',
-    'month_sin', 'month_cos'
+    'month_sin', 'month_cos',
+    'day_avg_norm'
 ]
 
+# 现在可以安全地使用feature_columns
 X = df[feature_columns].values
 y = df['box_count'].values
 
-# 对目标变量也进行标准化
+# 对目标变量也进行标准化处理
 y_scaler = StandardScaler()
 y = y_scaler.fit_transform(y.reshape(-1, 1)).flatten()
 
@@ -194,9 +213,16 @@ class ImprovedTransformerPredictor(nn.Module):
             nn.LayerNorm(hidden_dim)
         )
         
+        # 周期性特征处理层
+        self.periodic_layer = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, hidden_dim // 2)
+        )
+        
         # 输出层
         self.output_layer = nn.Sequential(
-            nn.Linear(hidden_dim, 32),
+            nn.Linear(hidden_dim + hidden_dim // 2, 32),  # 合并周期性特征
             nn.ReLU(),
             nn.Linear(32, 1)
         )
@@ -204,14 +230,20 @@ class ImprovedTransformerPredictor(nn.Module):
     def forward(self, x):
         # 输入处理
         x = self.input_layer(x)
-        x = x.unsqueeze(0)  # 添加序列维度
+        
+        # 提取周期性特征
+        periodic_features = self.periodic_layer(x)
         
         # 自注意力机制
-        x, _ = self.attention(x, x, x)
-        x = x.squeeze(0)  # 移除序列维度
+        x_unsqueezed = x.unsqueeze(0)  # 添加序列维度
+        x_attn, _ = self.attention(x_unsqueezed, x_unsqueezed, x_unsqueezed)
+        x = x_attn.squeeze(0)  # 移除序列维度
         
         # 前馈网络
         x = self.feed_forward(x)
+        
+        # 合并周期性特征
+        x = torch.cat([x, periodic_features], dim=1)
         
         # 输出层
         x = self.output_layer(x)
@@ -308,7 +340,9 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(X)):
 # 使用所有fold的模型进行集成预测
 def ensemble_predict(models, X_input):
     predictions = []
-    X_input = torch.FloatTensor(X_input)
+    # 确保X_input是正确的形状
+    if not isinstance(X_input, torch.Tensor):
+        X_input = torch.FloatTensor(X_input)
     
     for model in models:
         model.eval()
@@ -321,8 +355,8 @@ def ensemble_predict(models, X_input):
 
 # 预测未来值
 future_days = 7
-last_date = df['create_time'].max()
-future_dates = [last_date + timedelta(days=i) for i in range(1, future_days+1)]
+today = pd.Timestamp.now().normalize()  # 获取当天日期（不含时间）
+future_dates = [today + timedelta(days=i) for i in range(future_days)]  # 从当天开始预测7天
 # 转换未来日期为归一化的时间戳特征
 future_timestamps = [dt.timestamp() for dt in future_dates]
 future_timestamp_norm = [(ts - min_ts) / (max_ts - min_ts) for ts in future_timestamps]
@@ -331,7 +365,7 @@ future_timestamp_norm = [(ts - min_ts) / (max_ts - min_ts) for ts in future_time
 mean_supplier = df['supplier_delivery_quantity'].mean()
 mean_scan = df['scan_quantity'].mean()
 
-# 修改未来预测特征构造，确保维度与训练数据一致
+# 修改未来预测特征构造，加入星期几的平均值信息
 future_features = []
 for dt in future_dates:
     features = []
@@ -344,6 +378,12 @@ for dt in future_dates:
     day_of_month = dt.day
     month = dt.month
     
+    # 获取该星期几的平均箱数，如果没有则使用整体平均值
+    day_name = dt.day_name()
+    day_avg_value = day_avg.get(day_name, df['box_count'].mean())
+    # 将平均箱数标准化
+    day_avg_norm = (day_avg_value - df['box_count'].mean()) / df['box_count'].std()
+    
     features.extend([
         np.sin(2 * np.pi * hour / 24),
         np.cos(2 * np.pi * hour / 24),
@@ -352,7 +392,8 @@ for dt in future_dates:
         np.sin(2 * np.pi * day_of_month / 31),
         np.cos(2 * np.pi * day_of_month / 31),
         np.sin(2 * np.pi * month / 12),
-        np.cos(2 * np.pi * month / 12)
+        np.cos(2 * np.pi * month / 12),
+        day_avg_norm  # 添加星期几平均箱数作为特征
     ])
     
     future_features.append(features)
@@ -369,29 +410,44 @@ future_predictions = np.maximum(1, np.round(future_predictions))
 # 更新预测结果DataFrame
 future_df = pd.DataFrame({
     'date': future_dates,
+    'day_of_week': [dt.day_name() for dt in future_dates],
     'predicted_box_count': future_predictions.flatten()
 })
 
-print("\n未来日期预测：")
+print("\n未来7天箱数预测（从今天开始）：")
 print(future_df)
 
 # 可视化预测结果
-plt.figure(figsize=(10, 6))
+plt.figure(figsize=(12, 6))
 plt.plot(future_df['date'], future_df['predicted_box_count'], marker='o', label='预测值')
-plt.title('未来7天箱数预测')
+plt.title('未来7天箱数预测（从今天开始）')
 plt.xlabel('日期')
 plt.ylabel('预测箱数')
 plt.grid(True)
 plt.xticks(rotation=45)
+for i, (date, count, day) in enumerate(zip(future_df['date'], future_df['predicted_box_count'], future_df['day_of_week'])):
+    plt.annotate(f"{day}\n{int(count)}", (date, count), textcoords="offset points", xytext=(0,10), ha='center')
 plt.legend()
 plt.tight_layout()
 plt.show()
 
+# 确保保存图片的目录存在
+image_dir = os.path.join(project_root, 'data', 'photo')
+os.makedirs(image_dir, exist_ok=True)
+plt.savefig(os.path.join(image_dir, 'photo_prediction.png'))
+plt.close()
+
 # 打印预测的置信区间
 confidence_interval = np.std([model(torch.FloatTensor(future_features)).detach().numpy() 
                             for model in fold_models], axis=0) * 1.96
-print("\n预测置信区间：")
+print("\n预测置信区间（从今天开始）：")
 for i, (date, pred) in enumerate(zip(future_dates, future_predictions)):
     lower = max(1, int(np.round(pred[0] - confidence_interval[i])))
     upper = int(np.round(pred[0] + confidence_interval[i]))
     print(f"{date.date()}: {int(pred[0])} (95% CI: {lower}-{upper})")
+
+# 保存预测结果到CSV文件
+os.makedirs(os.path.join(project_root, 'data'), exist_ok=True)
+future_df['predicted_box_count'] = future_df['predicted_box_count'].astype(int)
+future_df.to_csv(os.path.join(project_root, 'data', 'photo_predictions.csv'), index=False)
+print(f"\n预测结果已保存到 {os.path.join(project_root, 'data', 'photo_predictions.csv')}")
