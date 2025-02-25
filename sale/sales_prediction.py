@@ -138,7 +138,7 @@ class SalesPredictor(nn.Module):
             nn.Linear(input_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
-            nn.Dropout(0.1)
+            nn.Dropout(0.2)  # 增加dropout比例以减少过拟合
         )
         
         # LSTM层
@@ -146,18 +146,19 @@ class SalesPredictor(nn.Module):
             input_size=hidden_dim,
             hidden_size=hidden_dim,
             num_layers=2,
-            dropout=0.1,
-            batch_first=True
+            dropout=0.2,  # 增加dropout比例
+            batch_first=True,
+            bidirectional=True  # 使用双向LSTM捕获更多时序信息
         )
         
         # 注意力层
-        self.attention = nn.MultiheadAttention(hidden_dim, num_heads=4, dropout=0.1)
+        self.attention = nn.MultiheadAttention(hidden_dim * 2, num_heads=4, dropout=0.2)  # 适应双向LSTM的输出维度
         
         # 输出层
         self.output_layer = nn.Sequential(
-            nn.Linear(hidden_dim, 64),
+            nn.Linear(hidden_dim * 2, 64),  # 适应双向LSTM的输出维度
             nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(0.2),
             nn.Linear(64, 1)
         )
     
@@ -170,13 +171,12 @@ class SalesPredictor(nn.Module):
         x = x.view(batch_size, seq_len, self.hidden_dim)
         
         # LSTM处理
-        lstm_out, _ = self.lstm(x)
+        lstm_out, _ = self.lstm(x)  # lstm_out形状: [batch_size, seq_len, hidden_dim*2]
         
         # 注意力机制
-        # 调整维度以适应注意力层
-        lstm_out = lstm_out.permute(1, 0, 2)  # [seq_len, batch_size, hidden_dim]
+        lstm_out = lstm_out.permute(1, 0, 2)  # [seq_len, batch_size, hidden_dim*2]
         attn_out, _ = self.attention(lstm_out, lstm_out, lstm_out)
-        attn_out = attn_out.permute(1, 0, 2)  # [batch_size, seq_len, hidden_dim]
+        attn_out = attn_out.permute(1, 0, 2)  # [batch_size, seq_len, hidden_dim*2]
         
         # 输出层
         x = self.output_layer(attn_out[:, -1, :])  # 只使用最后一个时间步
@@ -243,7 +243,7 @@ def train_model(df, prediction_days=30, sequence_length=60):
     
     for i in range(len(df) - sequence_length):
         X_sequences.append(X[i:(i + sequence_length)])
-        y_sequences.append(y[i:(i + sequence_length)])
+        y_sequences.append(y[i + sequence_length])  # 只预测序列后的下一个值
     
     X_sequences = np.array(X_sequences)
     y_sequences = np.array(y_sequences)
@@ -255,19 +255,19 @@ def train_model(df, prediction_days=30, sequence_length=60):
     X_test = X_sequences[train_size:]
     y_test = y_sequences[train_size:]
     
-    # 修复维度转换问题
+    # 转换为tensor
     X_train = torch.FloatTensor(X_train)
-    y_train = torch.FloatTensor(y_train[:, -1]).unsqueeze(1)  # 先转换为tensor再unsqueeze
+    y_train = torch.FloatTensor(y_train).unsqueeze(1)
     X_test = torch.FloatTensor(X_test)
-    y_test = torch.FloatTensor(y_test[:, -1]).unsqueeze(1)    # 先转换为tensor再unsqueeze
+    y_test = torch.FloatTensor(y_test).unsqueeze(1)
     
     # 初始化模型
     model = SalesPredictor(input_dim=len(feature_columns))
-    criterion = nn.HuberLoss(delta=1.0)
-    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.01)
+    criterion = nn.HuberLoss(delta=0.5)  # 降低delta值使损失函数对异常值更加鲁棒
+    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.001)  # 减小weight_decay
     
     # 添加批次训练
-    batch_size = 32
+    batch_size = 64  # 增加批次大小以加速训练
     train_dataset = torch.utils.data.TensorDataset(X_train, y_train)
     train_loader = torch.utils.data.DataLoader(
         train_dataset, 
@@ -283,20 +283,20 @@ def train_model(df, prediction_days=30, sequence_length=60):
     )
 
     # 修改训练参数
-    epochs = 200  # 增加训练轮数
-    patience = 20  # 增加早停耐心值
+    epochs = 300  # 增加训练轮数
+    patience = 30  # 增加早停耐心值
     best_loss = float('inf')
     no_improve = 0
     
     # 使用更稳定的学习率调度
     scheduler = optim.lr_scheduler.OneCycleLR(
         optimizer,
-        max_lr=0.001,
+        max_lr=0.002,  # 略微增加最大学习率
         epochs=epochs,
         steps_per_epoch=len(train_loader),
-        pct_start=0.3,  # 预热阶段占比
-        div_factor=25,  # 初始学习率除数
-        final_div_factor=1e4  # 最终学习率除数
+        pct_start=0.3,
+        div_factor=25,
+        final_div_factor=1e4
     )
 
     # 训练循环
@@ -312,9 +312,9 @@ def train_model(df, prediction_days=30, sequence_length=60):
             loss.backward()
             
             # 梯度裁剪
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)  # 降低裁剪阈值
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # 增加裁剪阈值以允许更大的梯度
             optimizer.step()
-            scheduler.step()  # 每个批次更新学习率
+            scheduler.step()
             total_train_loss += loss.item()
         
         # 验证
@@ -329,7 +329,6 @@ def train_model(df, prediction_days=30, sequence_length=60):
                 val_loss = criterion(val_outputs, batch_y)
                 total_val_loss += val_loss.item()
                 
-                # 收集预测和目标值用于计算其他指标
                 val_predictions.extend(val_outputs.cpu().numpy())
                 val_targets.extend(batch_y.cpu().numpy())
         
@@ -340,7 +339,9 @@ def train_model(df, prediction_days=30, sequence_length=60):
         # 计算验证集上的相对误差
         val_predictions = np.array(val_predictions)
         val_targets = np.array(val_targets)
-        relative_error = np.mean(np.abs((val_predictions - val_targets) / val_targets)) * 100
+        # 避免除以零
+        non_zero_targets = np.where(np.abs(val_targets) > 1e-6, val_targets, 1e-6)
+        relative_error = np.mean(np.abs((val_predictions - val_targets) / non_zero_targets)) * 100
         
         if avg_val_loss < best_loss:
             best_loss = avg_val_loss
@@ -351,19 +352,21 @@ def train_model(df, prediction_days=30, sequence_length=60):
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': best_loss,
+                'scaler_X': scaler_X,  # 保存标准化器以便预测时使用
+                'scaler_y': scaler_y,
             }, MODEL_PATH)
             no_improve = 0
         else:
             no_improve += 1
         
-        if epoch % 5 == 0:
+        if epoch % 10 == 0:  # 减少日志输出频率
             print(f"Epoch {epoch}/{epochs} | "
                   f"Train Loss: {avg_train_loss:.4f} | "
                   f"Val Loss: {avg_val_loss:.4f} | "
                   f"Relative Error: {relative_error:.2f}% | "
                   f"Learning Rate: {optimizer.param_groups[0]['lr']:.6f}")
         
-        if no_improve >= patience and epoch > 50:  # 确保至少训练50轮
+        if no_improve >= patience and epoch > 100:  # 确保至少训练100轮
             print("Early stopping triggered!")
             break
     
@@ -377,63 +380,108 @@ def predict_future(model, df, scaler_X, scaler_y, feature_columns, days_to_predi
     """预测未来销售额"""
     model.eval()
     
-    # 使用最近一年（365天）的数据，而不是仅仅60天
-    days_of_history = 365
-    last_sequence = df[feature_columns].iloc[-days_of_history:].values
-    last_sequence = scaler_X.transform(last_sequence)
+    # 准备最新的特征数据
+    latest_df = df.copy()
+    
+    # 预测未来销售额
+    future_dates = []
+    predictions = []
+    last_date = df['create_time'].iloc[-1]
     
     # 使用滑动窗口进行预测
-    window_size = 60  # 保持60天的预测窗口
-    predictions = []
+    window_size = 60
     
-    # 初始化第一个预测窗口
-    current_sequence = torch.FloatTensor(last_sequence[-window_size:]).unsqueeze(0)
+    # 获取初始序列
+    current_features = latest_df[feature_columns].iloc[-window_size:].values
+    current_features = scaler_X.transform(current_features)
+    current_sequence = torch.FloatTensor(current_features).unsqueeze(0)
     
-    for _ in range(days_to_predict):
+    for i in range(days_to_predict):
+        # 预测下一天
         with torch.no_grad():
-            next_pred = model(current_sequence).squeeze().item()
-            predictions.append(next_pred)
-            
-            # 更新序列：移除最早的一天，添加新预测的一天
-            current_sequence = torch.roll(current_sequence, -1, dims=1)
-            current_sequence[0, -1] = next_pred
-    
-    # 反转标准化
-    predictions = scaler_y.inverse_transform(np.array(predictions).reshape(-1, 1))
-    
-    # 生成预测日期
-    last_date = df['create_time'].iloc[-1]
-    future_dates = [last_date + timedelta(days=i+1) for i in range(days_to_predict)]
+            next_pred_scaled = model(current_sequence).item()
+        
+        # 反标准化预测值
+        next_pred = scaler_y.inverse_transform([[next_pred_scaled]])[0][0]
+        
+        # 计算下一天的日期
+        next_date = last_date + timedelta(days=i+1)
+        future_dates.append(next_date)
+        predictions.append(next_pred)
+        
+        # 为下一次预测准备新的特征
+        # 创建新的一行数据
+        new_row = pd.DataFrame({
+            'create_time': [next_date],
+            'amount': [next_pred]
+        })
+        
+        # 添加到原始数据中
+        temp_df = pd.concat([latest_df, new_row], ignore_index=True)
+        
+        # 重新计算特征
+        temp_df = prepare_features(temp_df)
+        
+        # 获取最新的特征向量
+        new_features = temp_df[feature_columns].iloc[-1:].values
+        new_features_scaled = scaler_X.transform(new_features)
+        
+        # 更新序列：移除最早的一天，添加新预测的一天
+        current_sequence = torch.roll(current_sequence, -1, dims=1)
+        current_sequence[0, -1] = torch.FloatTensor(new_features_scaled[0])
+        
+        # 更新latest_df为新的temp_df
+        latest_df = temp_df
     
     return pd.DataFrame({
         'date': future_dates,
-        'predicted_sales': predictions.flatten()
+        'predicted_sales': predictions
     })
 
 def plot_predictions(historical_data, predictions):
     """绘制预测结果"""
-    # 确保使用交互式后端
-    if matplotlib.get_backend() == 'agg':
-        matplotlib.use('TkAgg')
-    
     plt.figure(figsize=(15, 7))
+    
+    # 计算移动平均线以平滑历史数据
+    historical_data['amount_ma7'] = historical_data['amount'].rolling(window=7).mean()
     
     # 绘制历史数据
     plt.plot(historical_data['create_time'].iloc[-90:], 
              historical_data['amount'].iloc[-90:], 
-             label='历史销售额', color='blue')
+             label='历史销售额', color='blue', alpha=0.5)
+    
+    # 绘制历史数据的移动平均线
+    plt.plot(historical_data['create_time'].iloc[-90:], 
+             historical_data['amount_ma7'].iloc[-90:], 
+             label='历史销售额(7日均值)', color='darkblue', linewidth=2)
     
     # 绘制预测数据
     plt.plot(predictions['date'], predictions['predicted_sales'], 
-             label='预测销售额', color='red', linestyle='--')
+             label='预测销售额', color='red', linestyle='--', linewidth=2)
     
-    plt.title('销售额预测')
-    plt.xlabel('日期')
-    plt.ylabel('销售额')
-    plt.legend()
-    plt.grid(True)
+    # 添加预测区间的背景色
+    min_date = predictions['date'].min()
+    max_date = predictions['date'].max()
+    plt.axvspan(min_date, max_date, color='red', alpha=0.1)
+    
+    # 添加标题和标签
+    plt.title('销售额预测 (未来30天)', fontsize=16)
+    plt.xlabel('日期', fontsize=12)
+    plt.ylabel('销售额', fontsize=12)
+    
+    # 格式化x轴日期
+    plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+    plt.gca().xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
+    
+    plt.legend(loc='best')
+    plt.grid(True, linestyle='--', alpha=0.7)
     plt.xticks(rotation=45)
     plt.tight_layout()
+    
+    # 保存图表
+    os.makedirs(os.path.dirname(PLOT_FILE), exist_ok=True)
+    plt.savefig(PLOT_FILE, dpi=300)
+    print(f"预测图表已保存到 {PLOT_FILE}")
     
     # 显示图表
     plt.show()
@@ -447,6 +495,10 @@ def main():
         'end_date': None,    # 可以设置具体日期，如 '2024-03-01'
         'predict_days': 30,   # 预测天数
     }
+
+    # 确保数据目录存在
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(PTH_DIR, exist_ok=True)
 
     # 获取数据
     if args['update']:
@@ -464,9 +516,28 @@ def main():
     # 数据预处理
     daily_sales = preprocess_data(df)
     
-    # 训练模型
-    print("开始训练模型...")
-    model, scaler_X, scaler_y, feature_columns = train_model(daily_sales)
+    # 检查是否已有训练好的模型
+    if os.path.exists(MODEL_PATH):
+        print(f"加载已有模型: {MODEL_PATH}")
+        checkpoint = torch.load(MODEL_PATH)
+        model = SalesPredictor(input_dim=len(checkpoint.get('feature_columns', [])) 
+                              if 'feature_columns' in checkpoint 
+                              else 11)  # 默认特征数量
+        model.load_state_dict(checkpoint['model_state_dict'])
+        
+        # 尝试从checkpoint加载scaler
+        if 'scaler_X' in checkpoint and 'scaler_y' in checkpoint:
+            scaler_X = checkpoint['scaler_X']
+            scaler_y = checkpoint['scaler_y']
+            print("从模型中加载标准化器")
+        else:
+            # 如果没有保存scaler，重新训练模型
+            print("模型中没有保存标准化器，重新训练模型...")
+            model, scaler_X, scaler_y, feature_columns = train_model(daily_sales)
+    else:
+        # 训练模型
+        print("开始训练模型...")
+        model, scaler_X, scaler_y, feature_columns = train_model(daily_sales)
     
     # 预测未来销售额
     print("生成预测...")
@@ -477,7 +548,6 @@ def main():
     plot_predictions(daily_sales, predictions)
     
     # 保存预测结果
-    os.makedirs(DATA_DIR, exist_ok=True)
     predictions.to_csv(PREDICTIONS_FILE, index=False)
     print(f"预测结果已保存到 {PREDICTIONS_FILE}")
 
