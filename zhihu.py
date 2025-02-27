@@ -78,25 +78,26 @@ class GetHot:
             print(f"Successfully wrote to {file_path}")
         except IOError as e:
             print(f"Error writing to file: {e}")
+        
+        # Generate daily MD file
+        self.create_readme(result)
 
     def create_readme(self, questions: List[Dict[str, str]]) -> None:
-        """Generate README.md with current hot questions"""
-        readme_content = f"""# zhihu-trending-hot-questions
+        """Generate daily MD file with current hot questions in article directory"""
+        current_date = datetime.now().strftime('%Y-%m-%d')
+        readme_content = f"""# {current_date} 知乎热门话题
 
-参考[项目](https://github.com/justjavac/zhihu-trending-hot-questions)，由Python改写，仅为学习Python，无任何其他用途
-
-知乎热门话题，记录从 2023-7-19 开始的知乎热门话题。每小时抓取一次数据，按天[归档](./article)。
+共 {len(questions)} 条
 
 {self.create_readme_list(questions)}
-
-### License
-[zhihu-trending-hot-questions](https://github.com/yaogengzhu/zhihu-trending-hot-questions)
-的源码使用 MIT License 发布。具体内容请查看 [LICENSE](./LICENSE) 文件。
 """
         try:
-            README_PATH.write_text(readme_content, encoding='utf-8')
+            ARTICLE_DIR.mkdir(exist_ok=True)
+            file_path = ARTICLE_DIR / f"{current_date}.md"
+            file_path.write_text(readme_content, encoding='utf-8')
+            print(f"Successfully created {file_path}")
         except IOError as e:
-            print(f"Error writing README: {e}")
+            print(f"Error writing daily MD file: {e}")
 
     def create_readme_list(self, questions: List[Dict[str, str]]) -> str:
         """Format questions list for README"""
