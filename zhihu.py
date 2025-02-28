@@ -7,7 +7,6 @@ import json
 
 # Global constants
 ARTICLE_DIR = Path('./article')
-README_PATH = Path('README.md')
 
 class GetHot:
     def __init__(self, url: str):
